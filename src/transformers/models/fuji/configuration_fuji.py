@@ -169,7 +169,7 @@ class FujiConfig(PreTrainedConfig):
 
     def __init__(
         self,
-        # ── Base architecture ──────────────────────────────────────────
+        # Base architecture parameters
         vocab_size: Optional[int] = 151936,
         hidden_size: Optional[int] = 2048,
         intermediate_size: Optional[int] = 5632,
@@ -186,13 +186,13 @@ class FujiConfig(PreTrainedConfig):
         attention_bias: Optional[bool] = False,
         attention_dropout: Optional[float] = 0.0,
         head_dim: Optional[int] = 256,
-        # ── Linear attention (GatedDeltaNet) ──────────────────────────
+        # Linear attention (GatedDeltaNet) 
         linear_conv_kernel_dim: Optional[int] = 4,
         linear_key_head_dim: Optional[int] = 128,
         linear_value_head_dim: Optional[int] = 128,
         linear_num_key_heads: Optional[int] = 16,
         linear_num_value_heads: Optional[int] = 32,
-        # ── MoE ───────────────────────────────────────────────────────
+        # MoE parameters 
         decoder_sparse_step: Optional[int] = 1,
         moe_intermediate_size: Optional[int] = 512,
         shared_expert_intermediate_size: Optional[int] = 512,
@@ -203,11 +203,11 @@ class FujiConfig(PreTrainedConfig):
         router_aux_loss_coef: Optional[float] = 0.001,
         mlp_only_layers: Optional[List[int]] = None,
         layer_types: Optional[List[str]] = None,
-        # ── Special tokens ────────────────────────────────────────────
+        # Special tokens 
         pad_token_id: Optional[int] = None,
         bos_token_id: Optional[int] = None,
         eos_token_id: Optional[int] = None,
-        # ── Engram ────────────────────────────────────────────────────
+        # Engram
         use_engram: bool = True,
         engram_max_ngram_size: int = 3,
         engram_n_embed_per_ngram: int = 512,
@@ -215,19 +215,19 @@ class FujiConfig(PreTrainedConfig):
         engram_layer_ids: Optional[List[int]] = None,
         engram_seed: int = 0,
         engram_base_vocab_size: Optional[int] = None,
-        # ── mHC ───────────────────────────────────────────────────────
+        # mHC
         use_mhc: bool = True,
         mhc_num_streams: int = 4,
         mhc_sinkhorn_iterations: int = 20,
         **kwargs,
     ):
-        # ── Special tokens ────────────────────────────────────────────
+        # Special tokens 
         self.pad_token_id = pad_token_id
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.tie_word_embeddings = tie_word_embeddings
 
-        # ── Base architecture ──────────────────────────────────────────
+        # Base architecture
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
@@ -245,7 +245,7 @@ class FujiConfig(PreTrainedConfig):
         self.rope_parameters = rope_parameters
         kwargs.setdefault("partial_rotary_factor", 0.25)
 
-        # ── Layer types ───────────────────────────────────────────────
+        # Layer types
         self.layer_types = layer_types
         if self.layer_types is None:
             interval_pattern = kwargs.get("full_attention_interval", 4)
@@ -255,14 +255,14 @@ class FujiConfig(PreTrainedConfig):
             ]
         layer_type_validation(self.layer_types, self.num_hidden_layers)
 
-        # ── Linear attention ──────────────────────────────────────────
+        # Linear attention
         self.linear_conv_kernel_dim = linear_conv_kernel_dim
         self.linear_key_head_dim = linear_key_head_dim
         self.linear_value_head_dim = linear_value_head_dim
         self.linear_num_key_heads = linear_num_key_heads
         self.linear_num_value_heads = linear_num_value_heads
 
-        # ── MoE ───────────────────────────────────────────────────────
+        # MoE
         self.decoder_sparse_step = decoder_sparse_step
         self.moe_intermediate_size = moe_intermediate_size
         self.shared_expert_intermediate_size = shared_expert_intermediate_size
@@ -273,7 +273,7 @@ class FujiConfig(PreTrainedConfig):
         self.router_aux_loss_coef = router_aux_loss_coef
         self.mlp_only_layers = mlp_only_layers if mlp_only_layers is not None else []
 
-        # ── Engram ────────────────────────────────────────────────────
+        # Engram
         self.use_engram = use_engram
         self.engram_max_ngram_size = engram_max_ngram_size
         self.engram_n_embed_per_ngram = engram_n_embed_per_ngram
@@ -289,7 +289,7 @@ class FujiConfig(PreTrainedConfig):
             engram_base_vocab_size if engram_base_vocab_size is not None else vocab_size
         )
 
-        # ── mHC ───────────────────────────────────────────────────────
+        # mHC
         self.use_mhc = use_mhc
         self.mhc_num_streams = mhc_num_streams
         self.mhc_sinkhorn_iterations = mhc_sinkhorn_iterations

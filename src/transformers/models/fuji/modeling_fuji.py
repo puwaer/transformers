@@ -75,11 +75,9 @@ else:
 logger = logging.get_logger(__name__)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Engram: Conditional Memory via Scalable N-gram Lookup
 # Adapted from Megatron-LM engram_module.py for HuggingFace [B, S, D] format.
 # Reference: arXiv:2601.07372
-# ──────────────────────────────────────────────────────────────────────────────
 
 class FujiCompressedTokenizer(nn.Module):
     """Maps raw token IDs to a compressed vocabulary via NFKC normalisation.
