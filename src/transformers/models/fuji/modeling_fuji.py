@@ -20,14 +20,16 @@ Fuji extends Qwen3-Next with:
 Architecture overview:
   embed_tokens
     └─ for each layer L:
-         [mHC] aggregate n streams → x_in              [n,B,S,D] → [B,S,D]
+         [MHC-Lite] width_connection: n streams → x_in + closure  [n,B,S,D]→[B,S,D]
          [Engram, optional] x_in += engram_memory(input_ids, x_in)
-         x_out = FujiDecoderLayer(x_in, ...)           [B,S,D] → [B,S,D]
-         [mHC] distribute x_out → update n streams     [B,S,D] → [n,B,S,D]
+         x_out = FujiDecoderLayer(x_in, ...)                      [B,S,D]→[B,S,D]
+         [MHC-Lite] depth_connection via closure → update n streams[B,S,D]→[n,B,S,D]
     [mHC] final aggregate → [B,S,D]
   norm → lm_head
 """
 
+import itertools
+import math
 import unicodedata
 from collections.abc import Callable
 from typing import Any, List, Optional
@@ -379,116 +381,195 @@ class FujiEngramModule(nn.Module):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# mHC: Manifold-Constrained Hyper-Connections
-# Adapted from Megatron-LM mhc.py for HuggingFace [B, S, D] format.
+# mHC: Manifold-Constrained Hyper-Connections (MHC-Lite)
+# Adapted from MHC-Lite for HuggingFace [B, S, D] format.
 # X tensor convention: [n, B, S, D] (n = num_streams).
-# Reference: arXiv:2512.24880
+# Reference: MHC-Lite https://arxiv.org/abs/2601.05732
 # ──────────────────────────────────────────────────────────────────────────────
 
-class FujiSinkhornKnopp(nn.Module):
-    """Projects a square matrix onto the doubly stochastic manifold (Birkhoff polytope).
+# Module-level cache for permutation matrices (shared across FujiMHC instances)
+_fuji_perm_mats_cache: dict = {}
 
-    Alternately normalises rows and columns of exp(H) until convergence.
 
-    Args:
-        iterations: Number of alternating normalisation steps (20 typically suffices).
+def _get_fuji_perm_mats(n: int, device: torch.device) -> Tensor:
+    """Return all n! permutation matrices [n!, n, n], cached per (n, device).
+
+    The identity permutation is always first (index 0).
     """
-
-    def __init__(self, iterations: int = 20) -> None:
-        super().__init__()
-        self.iterations = iterations
-
-    def forward(self, H: Tensor) -> Tensor:
-        """Project H onto the doubly stochastic manifold.
-
-        Args:
-            H: Square matrix [n, n] (raw unconstrained parameters).
-
-        Returns:
-            Doubly stochastic matrix [n, n] (all rows and columns sum to 1,
-            all entries ≥ 0).
-        """
-        M = torch.exp(H)
-        for _ in range(self.iterations):
-            M = M / M.sum(dim=1, keepdim=True)  # row normalisation
-            M = M / M.sum(dim=0, keepdim=True)  # column normalisation
-        return M
+    key = (n, str(device))
+    if key not in _fuji_perm_mats_cache:
+        perms = list(itertools.permutations(range(n)))
+        idx = torch.tensor(perms, dtype=torch.long)
+        eye = torch.eye(n, dtype=torch.float32)
+        _fuji_perm_mats_cache[key] = eye[idx].to(device)   # [n!, n, n]
+    return _fuji_perm_mats_cache[key]
 
 
 class FujiMHC(nn.Module):
-    """Layer-level Manifold-Constrained Hyper-Connection (mHC) module.
+    """MHC-Lite: Manifold-Constrained Hyper-Connections via permutation matrices.
 
-    Manages n parallel residual streams at layer boundaries.
-    Internal residuals within a FujiDecoderLayer (attention + MLP) remain
-    standard; mHC adds multi-stream connectivity *between* layers.
+    More memory and compute efficient than Sinkhorn-Knopp based mHC:
+    - H_res is a learnable convex combination of all n! permutation matrices,
+      which spans the Birkhoff polytope without iterative projection.
+    - alpha (H_pre) and beta (H_post) are input-dependent (static + dynamic).
 
     Multi-stream state tensor X has shape [n, B, S, D].
 
-    Forward pass at each layer:
-        x_in   = softmax(H_pre) · X         aggregate → [B, S, D]
-        x_out  = TransformerLayer(x_in)       standard layer
-        H_res  = SinkhornKnopp(H_res_raw)     doubly stochastic [n, n]
-        X_new  = H_res · X + H_post ⊗ x_out  update n streams
-
-    Parameters:
-        H_pre_raw  [n]: aggregation weights (softmax applied in forward).
-        H_post_raw [n]: distribution weights (softmax applied in forward).
-        H_res_raw  [n,n]: residual mixing matrix (Sinkhorn-Knopp applied).
+    Forward pass at each layer boundary:
+        normed        = RMSNorm(concat(X streams))          [B, S, n*D]
+        alpha_pre     = sigmoid(scale * normed @ W + b)     [B, S, n]
+        res_coeff     = softmax(scale * normed @ W + b)     [B, S, n!]
+        H_res         = Σ_r res_coeff[r] * P_r              [B, S, n, n]
+        x_in          = Σ_s alpha_pre[s] * X[s]             [B, S, D]
+        new_residuals = H_res @ X                           [B, S, n, D]
+        x_out         = TransformerLayer(x_in)              [B, S, D]
+        beta          = sigmoid(scale * normed @ W + b) * 2 [B, S, n]
+        X_new         = beta ⊗ x_out + new_residuals        [n, B, S, D]
 
     Args:
-        hidden_size: Dimension D of each residual stream.
-        num_streams: Number of parallel residual streams n.
-        sinkhorn_iterations: Sinkhorn-Knopp iterations for H_res projection.
+        hidden_size:          Dimension D of each residual stream.
+        num_streams:          Number of parallel residual streams n.
+        layer_index:          Layer index for initialisation heuristic.
+        sinkhorn_iterations:  Unused; retained for API backward compatibility.
     """
 
     def __init__(
         self,
         hidden_size: int,
         num_streams: int,
-        sinkhorn_iterations: int = 20,
+        layer_index: int = 0,
+        sinkhorn_iterations: int = 20,   # unused, kept for API compat
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.num_streams = num_streams
-        self.sinkhorn = FujiSinkhornKnopp(iterations=sinkhorn_iterations)
+        n = num_streams
+        num_perms = math.factorial(n)
+        self.num_perms = num_perms
 
-        # H_pre: uniform init → equal contribution from all streams initially
-        self.H_pre_raw = nn.Parameter(torch.zeros(num_streams))
-        # H_post: uniform init → output broadcast equally to all streams
-        self.H_post_raw = nn.Parameter(torch.zeros(num_streams))
-        # H_res: identity init → each stream is its own residual initially
-        self.H_res_raw = nn.Parameter(torch.eye(num_streams))
+        # Which stream to favour at initialisation
+        init_idx = layer_index % n
+
+        # Normalise all streams concatenated: [B, S, n*D] → [B, S, n*D]
+        # Reuse FujiRMSNorm (defined later in this file; forward refs are fine
+        # because __init__ runs after the class body is fully parsed).
+        self._norm_dim = hidden_size * n   # stored so norm can be created lazily
+        self.norm = None                   # built on first forward (lazy init avoids
+                                           # forward-reference issues at class-def time)
+
+        # ------------------------------------------------------------------
+        # Width-connection parameters
+        #   static_alpha[:n]   → H_pre   (sigmoid gate per stream)
+        #   static_alpha[n:]   → H_res   (softmax over n! permutation weights)
+        # ------------------------------------------------------------------
+        init_alpha_pre = torch.ones(n) * -1.0
+        init_alpha_pre[init_idx] = 1.0
+        init_alpha_res = torch.ones(num_perms) * -8.0
+        init_alpha_res[0] = 0.0    # identity permutation dominates at init
+        self.static_alpha = nn.Parameter(torch.cat([init_alpha_pre, init_alpha_res]))
+
+        # Dynamic (input-dependent) component: [n*D] → [n + n!]
+        self.dynamic_alpha_fn = nn.Parameter(
+            torch.zeros(hidden_size * n, n + num_perms)
+        )
+        self.pre_branch_scale = nn.Parameter(torch.ones(1) * 1e-2)
+        self.residual_scale   = nn.Parameter(torch.ones(1) * 1e-2)
+
+        # ------------------------------------------------------------------
+        # Depth-connection parameters (beta / H_post)
+        # ------------------------------------------------------------------
+        init_beta = torch.ones(n) * -1.0
+        init_beta[init_idx] = 1.0
+        self.static_beta = nn.Parameter(init_beta)
+
+        # Dynamic component: [n*D] → [n]
+        self.dynamic_beta_fn = nn.Parameter(torch.zeros(hidden_size * n, n))
+        self.h_post_scale = nn.Parameter(torch.ones(1) * 1e-2)
+
+    def _get_norm(self, device):
+        """Lazily build FujiRMSNorm on first use (avoids forward reference)."""
+        if self.norm is None:
+            self.norm = FujiRMSNorm(self._norm_dim).to(device)
+        return self.norm
+
+    def forward(self, X: Tensor):
+        """Width connection: returns (branch_input, add_residual closure).
+
+        Usage::
+
+            x_in, add_residual = mhc(X)           # [B,S,D], closure
+            x_out = decoder_layer(x_in, ...)       # [B,S,D]
+            X = add_residual(x_out)                # [n,B,S,D]
+
+        Args:
+            X: Multi-stream hidden states [n, B, S, D].
+
+        Returns:
+            branch_input:  Aggregated layer input [B, S, D].
+            add_residual:  Closure ``(x_out: [B,S,D]) → [n,B,S,D]``.
+        """
+        n, B, S, D = X.shape
+
+        # Rearrange to [B, S, n, D] and flatten streams for normalisation
+        X_bsd = X.permute(1, 2, 0, 3)              # [B, S, n, D]
+        normed = X_bsd.reshape(B, S, n * D)         # [B, S, n*D]
+        normed = self._get_norm(X.device)(normed)   # [B, S, n*D]
+
+        # ---- Width weights (alpha) ----------------------------------------
+        wc = normed @ self.dynamic_alpha_fn          # [B, S, n + n!]
+        dynamic_pre = wc[..., :n]                    # [B, S, n]
+        dynamic_res = wc[..., n:]                    # [B, S, n!]
+
+        # H_pre: input-gated per-stream weights (sigmoid ∈ (0, 1))
+        alpha_pre = torch.sigmoid(
+            self.pre_branch_scale * dynamic_pre + self.static_alpha[:n]
+        )                                            # [B, S, n]
+
+        # H_res: convex combination of permutation matrices (no Sinkhorn)
+        res_coeff = torch.softmax(
+            self.residual_scale * dynamic_res + self.static_alpha[n:], dim=-1
+        )                                            # [B, S, n!]
+        perms = _get_fuji_perm_mats(n, X.device)    # [n!, n, n]
+        H_res = torch.einsum('...r, rij -> ...ij', res_coeff, perms)   # [B, S, n, n]
+
+        # Apply H_res: new_residuals[b,s,i,:] = Σ_j H_res[b,s,i,j] * X[b,s,j,:]
+        new_residuals = torch.einsum(
+            '...ij, ...jd -> ...id', H_res, X_bsd
+        )                                            # [B, S, n, D]
+
+        # Branch input: gated weighted sum over streams
+        branch_input = (alpha_pre.unsqueeze(-1) * X_bsd).sum(dim=-2)  # [B, S, D]
+
+        # ---- Depth weights (beta) ----------------------------------------
+        dc = normed @ self.dynamic_beta_fn           # [B, S, n]
+        beta = torch.sigmoid(
+            self.h_post_scale * dc + self.static_beta
+        ) * 2                                        # [B, S, n]  (range [0, 2])
+
+        def add_residual(x_out: Tensor) -> Tensor:
+            # x_out: [B, S, D]; beta: [B, S, n]; new_residuals: [B, S, n, D]
+            output = (
+                beta.unsqueeze(-1) * x_out.unsqueeze(-2) + new_residuals
+            )                                        # [B, S, n, D]
+            return output.permute(2, 0, 1, 3)        # [n, B, S, D]
+
+        return branch_input, add_residual
+
+    # ------------------------------------------------------------------
+    # Legacy interface kept for callers using aggregate/distribute pattern
+    # ------------------------------------------------------------------
 
     def aggregate_streams(self, X: Tensor) -> Tensor:
-        """Aggregate n residual streams into a single layer input.
-
-        Args:
-            X: Multi-stream states [n, B, S, D].
-
-        Returns:
-            Aggregated tensor [B, S, D].
-        """
-        H_pre = F.softmax(self.H_pre_raw, dim=0)  # [n]
-        return torch.einsum("n,n...->...", H_pre, X)
+        """[Legacy] Aggregate n streams → single branch input."""
+        branch_input, add_residual = self.forward(X)
+        self._cached_add_residual = add_residual
+        return branch_input
 
     def distribute_output(self, X: Tensor, x_out: Tensor) -> Tensor:
-        """Update n residual streams using the layer output.
-
-        Args:
-            X:     Current multi-stream states [n, B, S, D].
-            x_out: Standard TransformerLayer output [B, S, D].
-
-        Returns:
-            Updated multi-stream states [n, B, S, D].
-        """
-        H_res = self.sinkhorn(self.H_res_raw)        # [n, n] doubly stochastic
-        H_post = F.softmax(self.H_post_raw, dim=0)   # [n]
-
-        # Residual mixing: H_res @ X  (sum over j streams)
-        x_res = torch.einsum("ij,j...->i...", H_res, X)   # [n, B, S, D]
-        # Broadcast layer output to all streams
-        x_new = x_res + torch.einsum("i,...->i...", H_post, x_out)  # [n, B, S, D]
-        return x_new
+        """[Legacy] Update n streams using cached depth-connection closure."""
+        add_residual = self._cached_add_residual
+        self._cached_add_residual = None
+        return add_residual(x_out)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1331,9 +1412,10 @@ class FujiModel(FujiPreTrainedModel):
                 FujiMHC(
                     hidden_size=config.hidden_size,
                     num_streams=config.mhc_num_streams,
+                    layer_index=layer_idx,
                     sinkhorn_iterations=config.mhc_sinkhorn_iterations,
                 )
-                for _ in range(config.num_hidden_layers)
+                for layer_idx in range(config.num_hidden_layers)
             ])
             # Learnable final aggregation weights (like H_pre but for output)
             self.mhc_final_H_pre = nn.Parameter(torch.zeros(config.mhc_num_streams))
@@ -1411,9 +1493,9 @@ class FujiModel(FujiPreTrainedModel):
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             layer_mask = linear_attn_mask if decoder_layer.layer_type == "linear_attention" else causal_mask
 
-            # mHC: aggregate n streams into single input
+            # mHC: width connection — get branch input and depth-connection closure
             if self.config.use_mhc:
-                x_in = self.mhc_modules[layer_idx].aggregate_streams(X)  # [B, S, D]
+                x_in, add_residual = self.mhc_modules[layer_idx](X)  # [B,S,D], closure
             else:
                 x_in = hidden_states  # [B, S, D]
 
@@ -1434,9 +1516,9 @@ class FujiModel(FujiPreTrainedModel):
                 **kwargs,
             )
 
-            # mHC: distribute layer output back to n streams
+            # mHC: depth connection — update n streams via closure
             if self.config.use_mhc:
-                X = self.mhc_modules[layer_idx].distribute_output(X, x_out)  # [n, B, S, D]
+                X = add_residual(x_out)   # [n, B, S, D]
             else:
                 hidden_states = x_out
 

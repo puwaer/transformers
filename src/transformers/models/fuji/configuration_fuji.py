@@ -20,10 +20,12 @@ linear attention, MoE feed-forward) with two additional axes of capability:
      memory inserted at selected transformer layers. Provides O(1) static pattern
      recall without routing overhead.
 
-  2. **mHC** (arXiv:2512.24880): Manifold-Constrained Hyper-Connections. Replaces
-     standard single-stream residual connections between layers with n parallel
-     residual streams whose inter-stream mixing matrix is constrained to be doubly
-     stochastic via Sinkhorn-Knopp projection.
+  2. **mHC / MHC-Lite** (arXiv:2512.24880, arXiv:2601.05732): Manifold-Constrained
+     Hyper-Connections. Replaces standard single-stream residual connections with n
+     parallel residual streams. H_res is parameterised as a convex combination of n!
+     permutation matrices (MHC-Lite), which spans the same Birkhoff polytope as
+     Sinkhorn-Knopp projection but requires no iterative computation. alpha (H_pre)
+     and beta (H_post) are input-dependent via lightweight linear projections.
 """
 
 from typing import List, Optional
@@ -128,11 +130,13 @@ class FujiConfig(PreTrainedConfig):
             Vocabulary size used by Engram tokenizer compression. Defaults to
             `vocab_size` when `None`.
         use_mhc (`bool`, *optional*, defaults to `True`):
-            Enable Manifold-Constrained Hyper-Connections.
+            Enable Manifold-Constrained Hyper-Connections (MHC-Lite).
         mhc_num_streams (`int`, *optional*, defaults to 4):
             Number of parallel residual streams for mHC.
         mhc_sinkhorn_iterations (`int`, *optional*, defaults to 20):
-            Sinkhorn-Knopp iterations for doubly-stochastic projection of H_res.
+            **Deprecated / unused.** Kept for checkpoint backward compatibility.
+            MHC-Lite uses a convex combination of permutation matrices instead
+            of iterative Sinkhorn-Knopp projection, so this value is ignored.
 
     Example:
     ```python
