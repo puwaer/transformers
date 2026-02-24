@@ -223,6 +223,8 @@ class FujiConfig(PreTrainedConfig):
         use_mhc: bool = True,
         mhc_num_streams: int = 4,
         mhc_sinkhorn_iterations: int = 20,
+        # Attention QK LayerNorm (Megatron qk_layernorm arg)
+        qk_layernorm: bool = False,
         **kwargs,
     ):
         # Special tokens 
@@ -297,6 +299,9 @@ class FujiConfig(PreTrainedConfig):
         self.use_mhc = use_mhc
         self.mhc_num_streams = mhc_num_streams
         self.mhc_sinkhorn_iterations = mhc_sinkhorn_iterations
+
+        # Attention QK LayerNorm
+        self.qk_layernorm = qk_layernorm
 
         super().__init__(**kwargs)
 

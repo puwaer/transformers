@@ -791,7 +791,7 @@ class FujiAttention(nn.Module):
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
         self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim * 2, bias=config.attention_bias
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
         )
         self.k_proj = nn.Linear(
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
@@ -802,8 +802,12 @@ class FujiAttention(nn.Module):
         self.o_proj = nn.Linear(
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
-        self.q_norm = FujiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = FujiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        if getattr(config, 'qk_layernorm', False):
+            self.q_norm = FujiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.k_norm = FujiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        else:
+            self.q_norm = None
+            self.k_norm = None
 
     def forward(
         self,
@@ -817,13 +821,16 @@ class FujiAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states, gate = torch.chunk(
-            self.q_proj(hidden_states).view(*input_shape, -1, self.head_dim * 2), 2, dim=-1
-        )
-        gate = gate.reshape(*input_shape, -1)
+        query_states = self.q_proj(hidden_states).view(hidden_shape)
+        if self.q_norm is not None:
+            query_states = self.q_norm(query_states)
+        query_states = query_states.transpose(1, 2)
 
-        query_states = self.q_norm(query_states.view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(hidden_shape)
+        if self.k_norm is not None:
+            key_states = self.k_norm(key_states)
+        key_states = key_states.transpose(1, 2)
+
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
@@ -848,7 +855,6 @@ class FujiAttention(nn.Module):
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = attn_output * torch.sigmoid(gate)
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
@@ -1140,6 +1146,21 @@ class FujiGatedDeltaNet(nn.Module):
         return self.out_proj(core_attn_out)
 
 
+class FujiGELUMLP(nn.Module):
+    """Dense GELU MLP for full-attention layers. Matches Megatron swiglu=False (fc1/fc2)."""
+
+    def __init__(self, config, intermediate_size=None):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size if intermediate_size is None else intermediate_size
+        self.fc1 = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.fc2 = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.act_fn = ACT2FN["gelu"]
+
+    def forward(self, x):
+        return self.fc2(self.act_fn(self.fc1(x)))
+
+
 class FujiMLP(nn.Module):
     def __init__(self, config, intermediate_size=None):
         super().__init__()
@@ -1245,7 +1266,9 @@ class FujiDecoderLayer(GradientCheckpointingLayer):
         elif self.layer_type == "full_attention":
             self.self_attn = FujiAttention(config, layer_idx)
 
-        if (layer_idx not in config.mlp_only_layers) and (
+        if self.layer_type == "full_attention":
+            self.mlp = FujiGELUMLP(config)
+        elif (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
             self.mlp = FujiSparseMoeBlock(config)
@@ -1417,8 +1440,16 @@ class FujiModel(FujiPreTrainedModel):
                 )
                 for layer_idx in range(config.num_hidden_layers)
             ])
-            # Learnable final aggregation weights (like H_pre but for output)
-            self.mhc_final_H_pre = nn.Parameter(torch.zeros(config.mhc_num_streams))
+            # Final stream aggregation: Linear(n*D, D) matching Megatron's stream_proj.
+            # Initialised as equal-weight average (same as Megatron's init).
+            n = config.mhc_num_streams
+            D = config.hidden_size
+            self.stream_proj = nn.Linear(n * D, D, bias=False)
+            with torch.no_grad():
+                w = torch.zeros(D, n * D)
+                for s in range(n):
+                    w[:, s * D:(s + 1) * D] = torch.eye(D) / n
+                self.stream_proj.weight.copy_(w)
 
         # ── Engram: one module per selected layer ─────────────────────
         if config.use_engram:
@@ -1524,8 +1555,11 @@ class FujiModel(FujiPreTrainedModel):
 
         # ── Final aggregation (mHC) ───────────────────────────────────
         if self.config.use_mhc:
-            H_pre = F.softmax(self.mhc_final_H_pre, dim=0)  # [n]
-            hidden_states = torch.einsum("n,n...->...", H_pre, X)  # [B, S, D]
+            # X: [n, B, S, D] → [B, S, n*D] → stream_proj → [B, S, D]
+            # Matches Megatron's stream_proj Linear(n*D, D).
+            n_s, B_s, S_s, D_s = X.shape
+            X_flat = X.permute(1, 2, 0, 3).reshape(B_s, S_s, n_s * D_s)
+            hidden_states = self.stream_proj(X_flat)
 
         hidden_states = self.norm(hidden_states)
 
