@@ -530,7 +530,7 @@ class FujiMHC(nn.Module):
             self.residual_scale * dynamic_res + self.static_alpha[n:], dim=-1
         )                                            # [B, S, n!]
         perms = _get_fuji_perm_mats(n, X.device)    # [n!, n, n]
-        H_res = torch.einsum('...r, rij -> ...ij', res_coeff, perms)   # [B, S, n, n]
+        H_res = torch.einsum('...r, rij -> ...ij', res_coeff, perms.to(res_coeff.dtype))    # [B, S, n, n]
 
         # Apply H_res: new_residuals[b,s,i,:] = Σ_j H_res[b,s,i,j] * X[b,s,j,:]
         new_residuals = torch.einsum(
