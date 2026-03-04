@@ -451,11 +451,9 @@ class FujiMHC(nn.Module):
         init_idx = layer_index % n
 
         # Normalise all streams concatenated: [B, S, n*D] → [B, S, n*D]
-        # Reuse FujiRMSNorm (defined later in this file; forward refs are fine
-        # because __init__ runs after the class body is fully parsed).
-        self._norm_dim = hidden_size * n   # stored so norm can be created lazily
-        self.norm = None                   # built on first forward (lazy init avoids
-                                           # forward-reference issues at class-def time)
+        # FujiRMSNorm is defined later in this file but __init__ is called at
+        # instance-creation time, by which point FujiRMSNorm is already defined.
+        self.norm = FujiRMSNorm(hidden_size * n)
 
         # ------------------------------------------------------------------
         # Width-connection parameters
@@ -487,10 +485,7 @@ class FujiMHC(nn.Module):
         self.h_post_scale = nn.Parameter(torch.ones(1) * 1e-2)
 
     def _get_norm(self, device):
-        """Lazily build FujiRMSNorm on first use (avoids forward reference)."""
-        if self.norm is None:
-            self.norm = FujiRMSNorm(self._norm_dim).to(device)
-        return self.norm
+        return self.norm.to(device)
 
     def forward(self, X: Tensor):
         """Width connection: returns (branch_input, add_residual closure).
