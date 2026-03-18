@@ -162,7 +162,7 @@ class FujiNgramHashMapping(nn.Module):
         self.layer_id = layer_id
 
         self.primes: List[int] = [
-            self._DEFAULT_PRIMES.get(k, self._DEFAULT_PRIMES[3])
+            config.engram_n_embed_per_ngram
             for k in range(2, config.engram_max_ngram_size + 1)
         ]
         # Total rows per order = prime_k × n_head_per_ngram
@@ -326,23 +326,23 @@ class FujiEngramModule(nn.Module):
         self.ngram_hash = FujiNgramHashMapping(config, layer_id)
 
         total_rows = sum(self.ngram_hash.vocab_sizes)
-        self.multi_head_emb = FujiMultiHeadEmbedding(total_rows, config.engram_n_embed_per_ngram)
+        self.multi_head_emb = FujiMultiHeadEmbedding(total_rows, config.engram_embed_dim)
 
         num_total_heads = (config.engram_max_ngram_size - 1) * config.engram_n_head_per_ngram
-        self.short_conv = FujiShortConv(channels=config.engram_n_embed_per_ngram, kernel_size=4)
+        self.short_conv = FujiShortConv(channels=config.engram_embed_dim, kernel_size=4)
 
         # Collapse all heads into a single embedding vector
         self.head_proj = nn.Linear(
-            num_total_heads * config.engram_n_embed_per_ngram,
-            config.engram_n_embed_per_ngram,
+            num_total_heads * config.engram_embed_dim,
+            config.engram_embed_dim,
             bias=False,
         )
 
         # Context-aware gate: hidden_states → gate weights
-        self.gate_proj = nn.Linear(hidden_size, config.engram_n_embed_per_ngram, bias=False)
+        self.gate_proj = nn.Linear(hidden_size, config.engram_embed_dim, bias=False)
 
         # Output projection; zero-init so Engram starts as identity residual
-        self.out_proj = nn.Linear(config.engram_n_embed_per_ngram, hidden_size, bias=False)
+        self.out_proj = nn.Linear(config.engram_embed_dim, hidden_size, bias=False)
         nn.init.zeros_(self.out_proj.weight)
 
     def forward(self, input_ids: Tensor, hidden_states: Tensor) -> Tensor:

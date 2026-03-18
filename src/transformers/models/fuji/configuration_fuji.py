@@ -117,8 +117,11 @@ class FujiConfig(PreTrainedConfig):
             Enable Engram conditional memory modules.
         engram_max_ngram_size (`int`, *optional*, defaults to 3):
             Maximum N-gram order for Engram (supports 2 … max_ngram_size).
-        engram_n_embed_per_ngram (`int`, *optional*, defaults to 512):
-            Embedding dimension per N-gram order in the Engram table.
+        engram_n_embed_per_ngram (`int`, *optional*, defaults to 99991):
+            Hash table size (prime) per N-gram order. Used as the modulus in
+            NgramHashMapping. Should be a prime number.
+        engram_embed_dim (`int`, *optional*, defaults to 672):
+            Embedding dimension per row in the MultiHeadEmbedding table.
         engram_n_head_per_ngram (`int`, *optional*, defaults to 8):
             Number of independent hash heads per N-gram for collision resistance.
         engram_layer_ids (`list[int]`, *optional*):
@@ -214,7 +217,8 @@ class FujiConfig(PreTrainedConfig):
         # Engram
         use_engram: bool = True,
         engram_max_ngram_size: int = 3,
-        engram_n_embed_per_ngram: int = 512,
+        engram_n_embed_per_ngram: int = 99991,
+        engram_embed_dim: int = 672,
         engram_n_head_per_ngram: int = 8,
         engram_layer_ids: Optional[List[int]] = None,
         engram_seed: int = 0,
@@ -283,10 +287,13 @@ class FujiConfig(PreTrainedConfig):
         self.use_engram = use_engram
         self.engram_max_ngram_size = engram_max_ngram_size
         self.engram_n_embed_per_ngram = engram_n_embed_per_ngram
+        self.engram_embed_dim = engram_embed_dim
         self.engram_n_head_per_ngram = engram_n_head_per_ngram
-        # Default: apply at first layer and midpoint layer
+        # Default: first and last full-attention layers (derived from layer_types)
         if engram_layer_ids is None:
-            self.engram_layer_ids = [0, self.num_hidden_layers // 2]
+            full_attn = [i for i, t in enumerate(self.layer_types) if t == "full_attention"]
+            self.engram_layer_ids = ([full_attn[0], full_attn[-1]] if len(full_attn) >= 2
+                                     else list(full_attn))
         else:
             self.engram_layer_ids = list(engram_layer_ids)
         self.engram_seed = engram_seed
