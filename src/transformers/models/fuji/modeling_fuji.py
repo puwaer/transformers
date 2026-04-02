@@ -1321,7 +1321,7 @@ class FujiDecoderLayer(GradientCheckpointingLayer):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class FujiPreTrainedModel(PreTrainedModel):
-    config: FujiConfig
+    config_class = FujiConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["FujiDecoderLayer"]
