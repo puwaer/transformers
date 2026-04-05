@@ -162,7 +162,7 @@ class FujiNgramHashMapping(nn.Module):
         self.layer_id = layer_id
 
         self.primes: List[int] = [
-            self._DEFAULT_PRIMES.get(k, self._DEFAULT_PRIMES[3])
+            config.engram_n_embed_per_ngram
             for k in range(2, config.engram_max_ngram_size + 1)
         ]
         # Total rows per order = prime_k × n_head_per_ngram
@@ -326,23 +326,23 @@ class FujiEngramModule(nn.Module):
         self.ngram_hash = FujiNgramHashMapping(config, layer_id)
 
         total_rows = sum(self.ngram_hash.vocab_sizes)
-        self.multi_head_emb = FujiMultiHeadEmbedding(total_rows, config.engram_n_embed_per_ngram)
+        self.multi_head_emb = FujiMultiHeadEmbedding(total_rows, config.engram_embed_dim)
 
         num_total_heads = (config.engram_max_ngram_size - 1) * config.engram_n_head_per_ngram
-        self.short_conv = FujiShortConv(channels=config.engram_n_embed_per_ngram, kernel_size=4)
+        self.short_conv = FujiShortConv(channels=config.engram_embed_dim, kernel_size=4)
 
         # Collapse all heads into a single embedding vector
         self.head_proj = nn.Linear(
-            num_total_heads * config.engram_n_embed_per_ngram,
-            config.engram_n_embed_per_ngram,
+            num_total_heads * config.engram_embed_dim,
+            config.engram_embed_dim,
             bias=False,
         )
 
         # Context-aware gate: hidden_states → gate weights
-        self.gate_proj = nn.Linear(hidden_size, config.engram_n_embed_per_ngram, bias=False)
+        self.gate_proj = nn.Linear(hidden_size, config.engram_embed_dim, bias=False)
 
         # Output projection; zero-init so Engram starts as identity residual
-        self.out_proj = nn.Linear(config.engram_n_embed_per_ngram, hidden_size, bias=False)
+        self.out_proj = nn.Linear(config.engram_embed_dim, hidden_size, bias=False)
         nn.init.zeros_(self.out_proj.weight)
 
     def forward(self, input_ids: Tensor, hidden_states: Tensor) -> Tensor:
@@ -451,11 +451,9 @@ class FujiMHC(nn.Module):
         init_idx = layer_index % n
 
         # Normalise all streams concatenated: [B, S, n*D] → [B, S, n*D]
-        # Reuse FujiRMSNorm (defined later in this file; forward refs are fine
-        # because __init__ runs after the class body is fully parsed).
-        self._norm_dim = hidden_size * n   # stored so norm can be created lazily
-        self.norm = None                   # built on first forward (lazy init avoids
-                                           # forward-reference issues at class-def time)
+        # FujiRMSNorm is defined later in this file but __init__ is called at
+        # instance-creation time, by which point FujiRMSNorm is already defined.
+        self.norm = FujiRMSNorm(hidden_size * n)
 
         # ------------------------------------------------------------------
         # Width-connection parameters
@@ -487,10 +485,7 @@ class FujiMHC(nn.Module):
         self.h_post_scale = nn.Parameter(torch.ones(1) * 1e-2)
 
     def _get_norm(self, device):
-        """Lazily build FujiRMSNorm on first use (avoids forward reference)."""
-        if self.norm is None:
-            self.norm = FujiRMSNorm(self._norm_dim).to(device)
-        return self.norm
+        return self.norm.to(device)
 
     def forward(self, X: Tensor):
         """Width connection: returns (branch_input, add_residual closure).
@@ -1326,7 +1321,7 @@ class FujiDecoderLayer(GradientCheckpointingLayer):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class FujiPreTrainedModel(PreTrainedModel):
-    config: FujiConfig
+    config_class = FujiConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["FujiDecoderLayer"]
