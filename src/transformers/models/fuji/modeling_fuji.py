@@ -204,10 +204,11 @@ class FujiNgramHashMapping(nn.Module):
             prime = self.primes[order_idx]
             offset = self.offsets[order_idx]
 
-            # Build k-gram sequences: [B, S, k] (zero-pad left for causal alignment)
+            # Build k-gram sequences: [B, S, k] (pad with last token for causal alignment)
+            last_tok = compressed_ids[:, -1:]  # [B, 1]
             ngrams = torch.stack(
                 [
-                    F.pad(compressed_ids[:, i:], (0, i), value=0)[:, :S]
+                    torch.cat([compressed_ids[:, i:], last_tok.expand(-1, i)], dim=1)[:, :S]
                     for i in range(k)
                 ],
                 dim=-1,
