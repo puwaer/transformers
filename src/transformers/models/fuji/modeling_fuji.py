@@ -578,7 +578,7 @@ class FujiRMSNormGated(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
-    def forward(self, hidden_states, gate=None):
+    def forward(self, hidden_states, gate):
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
@@ -856,7 +856,8 @@ class FujiAttention(nn.Module):
 
 
 def apply_mask_to_padding_states(hidden_states, attention_mask):
-    if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
+    # seq_len > 1 のときのみマスク適用（単一トークン生成ステップではパディング不要）
+    if attention_mask is not None and attention_mask.shape[1] > 1:
         dtype = hidden_states.dtype
         hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
     return hidden_states
