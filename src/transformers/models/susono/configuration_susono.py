@@ -1,4 +1,4 @@
-# Copyright 2025 The Fuji Team. All rights reserved.
+# Copyright 2025 The Susono Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Fuji model configuration.
+"""Susono model configuration.
 
-Fuji extends the Qwen3-Next architecture (hybrid full-attention + GatedDeltaNet
+Susono extends the Qwen3-Next architecture (hybrid full-attention + GatedDeltaNet
 linear attention, MoE feed-forward) with two additional axes of capability:
 
   1. **Engram** (arXiv:2601.07372): Deterministic N-gram hash-based conditional
@@ -38,11 +38,11 @@ from ...utils import logging
 logger = logging.get_logger(__name__)
 
 
-class FujiConfig(PreTrainedConfig):
+class SusonoConfig(PreTrainedConfig):
     r"""
-    Configuration class for the Fuji model.
+    Configuration class for the Susono model.
 
-    Fuji is a hybrid transformer language model combining:
+    Susono is a hybrid transformer language model combining:
     - Full (softmax) attention layers and GatedDeltaNet linear attention layers
     - Sparse Mixture-of-Experts (MoE) feed-forward blocks
     - Engram conditional memory (N-gram hash lookup) at selected layers
@@ -143,15 +143,15 @@ class FujiConfig(PreTrainedConfig):
 
     Example:
     ```python
-    >>> from transformers import FujiConfig, FujiModel
+    >>> from transformers import SusonoConfig, SusonoModel
 
-    >>> config = FujiConfig()
-    >>> model = FujiModel(config)
+    >>> config = SusonoConfig()
+    >>> model = SusonoModel(config)
     >>> config = model.config
     ```
     """
 
-    model_type = "fuji"
+    model_type = "susono"
     keys_to_ignore_at_inference = ["past_key_values"]
 
     base_model_tp_plan = {
@@ -313,4 +313,4 @@ class FujiConfig(PreTrainedConfig):
         super().__init__(**kwargs)
 
 
-__all__ = ["FujiConfig"]
+__all__ = ["SusonoConfig"]

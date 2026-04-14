@@ -1,4 +1,4 @@
-# Copyright 2025 The Fuji Team. All rights reserved.
+# Copyright 2025 The Susono Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Fuji model implementation.
+"""Susono model implementation.
 
-Fuji extends Qwen3-Next with:
+Susono extends Qwen3-Next with:
   - Engram: conditional N-gram hash-based memory (arXiv:2601.07372)
   - mHC: Manifold-Constrained Hyper-Connections (arXiv:2512.24880)
 
@@ -22,7 +22,7 @@ Architecture overview:
     └─ for each layer L:
          [MHC-Lite] width_connection: n streams → x_in + closure  [n,B,S,D]→[B,S,D]
          [Engram, optional] x_in += engram_memory(input_ids, x_in)
-         x_out = FujiDecoderLayer(x_in, ...)                      [B,S,D]→[B,S,D]
+         x_out = SusonoDecoderLayer(x_in, ...)                      [B,S,D]→[B,S,D]
          [MHC-Lite] depth_connection via closure → update n streams[B,S,D]→[n,B,S,D]
     [mHC] final aggregate → [B,S,D]
   norm → lm_head
@@ -59,7 +59,7 @@ from ...utils import TransformersKwargs, auto_docstring, can_return_tuple, loggi
 from ...utils.generic import maybe_autocast, merge_with_config_defaults
 from ...utils.import_utils import is_causal_conv1d_available, is_flash_linear_attention_available
 from ...utils.output_capturing import OutputRecorder, capture_outputs
-from .configuration_fuji import FujiConfig
+from .configuration_susono import SusonoConfig
 
 
 if is_causal_conv1d_available():
@@ -81,7 +81,7 @@ logger = logging.get_logger(__name__)
 # Adapted from Megatron-LM engram_module.py for HuggingFace [B, S, D] format.
 # Reference: arXiv:2601.07372
 
-class FujiCompressedTokenizer(nn.Module):
+class SusonoCompressedTokenizer(nn.Module):
     """Maps raw token IDs to a compressed vocabulary via NFKC normalisation.
 
     The lookup table is a fixed integer buffer (not a learnable parameter).
@@ -105,8 +105,8 @@ class FujiCompressedTokenizer(nn.Module):
         vocab: dict,
         base_vocab_size: int,
         seed: int = 0,
-    ) -> "FujiCompressedTokenizer":
-        """Build a FujiCompressedTokenizer from a {token_id: token_string} dict.
+    ) -> "SusonoCompressedTokenizer":
+        """Build a SusonoCompressedTokenizer from a {token_id: token_string} dict.
 
         Normalisation pipeline: NFKC → NFD → strip combining marks → lower-case.
         Two token IDs that map to the same normalised form share a compressed ID,
@@ -140,7 +140,7 @@ class FujiCompressedTokenizer(nn.Module):
         return self.mapping[token_ids]
 
 
-class FujiNgramHashMapping(nn.Module):
+class SusonoNgramHashMapping(nn.Module):
     """Deterministic N-gram hashing using XOR-mix hash functions.
 
     For each N-gram order k (2 ≤ k ≤ max_ngram_size) and each hash head h:
@@ -150,13 +150,13 @@ class FujiNgramHashMapping(nn.Module):
     Multipliers are seeded from (layer_id, k, h) for cross-layer independence.
 
     Args:
-        config: FujiConfig instance.
+        config: SusonoConfig instance.
         layer_id: 0-indexed transformer layer ID (used to seed hashes).
     """
 
     _DEFAULT_PRIMES = {2: 999983, 3: 1999993, 4: 3999971}
 
-    def __init__(self, config: FujiConfig, layer_id: int) -> None:
+    def __init__(self, config: SusonoConfig, layer_id: int) -> None:
         super().__init__()
         self.config = config
         self.layer_id = layer_id
@@ -176,7 +176,7 @@ class FujiNgramHashMapping(nn.Module):
         self.register_buffer("multipliers", multipliers)
 
     @staticmethod
-    def _build_multipliers(config: FujiConfig, layer_id: int) -> Tensor:
+    def _build_multipliers(config: SusonoConfig, layer_id: int) -> Tensor:
         """Generate deterministic odd multipliers for each (ngram_order, head, position)."""
         num_orders = config.engram_max_ngram_size - 1
         shape = (num_orders, config.engram_n_head_per_ngram, config.engram_max_ngram_size)
@@ -233,7 +233,7 @@ class FujiNgramHashMapping(nn.Module):
         return torch.cat(all_indices, dim=-1)  # [B, S, total_heads]
 
 
-class FujiMultiHeadEmbedding(nn.Module):
+class SusonoMultiHeadEmbedding(nn.Module):
     """Flat embedding table covering all N-gram orders and hash heads.
 
     Layout (row dimension):
@@ -262,7 +262,7 @@ class FujiMultiHeadEmbedding(nn.Module):
         return self.table(indices)
 
 
-class FujiShortConv(nn.Module):
+class SusonoShortConv(nn.Module):
     """1-D depthwise convolution along the sequence dimension.
 
     Fuses adjacent N-gram embeddings to capture local sequential patterns.
@@ -299,38 +299,38 @@ class FujiShortConv(nn.Module):
         return x.permute(0, 2, 1)  # [B, S, C]
 
 
-class FujiEngramModule(nn.Module):
+class SusonoEngramModule(nn.Module):
     """Engram conditional memory module (HuggingFace batch-first variant).
 
     Retrieves static N-gram memory and fuses it with current hidden states
-    via context-aware gating. Designed to be called from FujiModel.forward
+    via context-aware gating. Designed to be called from SusonoModel.forward
     at selected layers before the standard decoder layer function.
 
     Pipeline:
-        token_ids → FujiCompressedTokenizer → FujiNgramHashMapping
-                  → FujiMultiHeadEmbedding → head_proj → FujiShortConv
+        token_ids → SusonoCompressedTokenizer → SusonoNgramHashMapping
+                  → SusonoMultiHeadEmbedding → head_proj → SusonoShortConv
                   → sigmoid(gate_proj(hidden_states)) · emb → out_proj
                   → memory increment (add to hidden_states)
 
     Args:
-        config: FujiConfig.
+        config: SusonoConfig.
         layer_id: 0-indexed transformer layer where this module is inserted.
     """
 
-    def __init__(self, config: FujiConfig, layer_id: int) -> None:
+    def __init__(self, config: SusonoConfig, layer_id: int) -> None:
         super().__init__()
         self.config = config
         self.layer_id = layer_id
         hidden_size = config.hidden_size
 
-        self.tokenizer = FujiCompressedTokenizer(config.engram_base_vocab_size, config.engram_seed)
-        self.ngram_hash = FujiNgramHashMapping(config, layer_id)
+        self.tokenizer = SusonoCompressedTokenizer(config.engram_base_vocab_size, config.engram_seed)
+        self.ngram_hash = SusonoNgramHashMapping(config, layer_id)
 
         total_rows = sum(self.ngram_hash.vocab_sizes)
-        self.multi_head_emb = FujiMultiHeadEmbedding(total_rows, config.engram_embed_dim)
+        self.multi_head_emb = SusonoMultiHeadEmbedding(total_rows, config.engram_embed_dim)
 
         num_total_heads = (config.engram_max_ngram_size - 1) * config.engram_n_head_per_ngram
-        self.short_conv = FujiShortConv(channels=config.engram_embed_dim, kernel_size=4)
+        self.short_conv = SusonoShortConv(channels=config.engram_embed_dim, kernel_size=4)
 
         # Collapse all heads into a single embedding vector
         self.head_proj = nn.Linear(
@@ -388,25 +388,25 @@ class FujiEngramModule(nn.Module):
 # Reference: MHC-Lite https://arxiv.org/abs/2601.05732
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Module-level cache for permutation matrices (shared across FujiMHC instances)
-_fuji_perm_mats_cache: dict = {}
+# Module-level cache for permutation matrices (shared across SusonoMHC instances)
+_susono_perm_mats_cache: dict = {}
 
 
-def _get_fuji_perm_mats(n: int, device: torch.device) -> Tensor:
+def _get_susono_perm_mats(n: int, device: torch.device) -> Tensor:
     """Return all n! permutation matrices [n!, n, n], cached per (n, device).
 
     The identity permutation is always first (index 0).
     """
     key = (n, str(device))
-    if key not in _fuji_perm_mats_cache:
+    if key not in _susono_perm_mats_cache:
         perms = list(itertools.permutations(range(n)))
         idx = torch.tensor(perms, dtype=torch.long)
         eye = torch.eye(n, dtype=torch.float32)
-        _fuji_perm_mats_cache[key] = eye[idx].to(device)   # [n!, n, n]
-    return _fuji_perm_mats_cache[key]
+        _susono_perm_mats_cache[key] = eye[idx].to(device)   # [n!, n, n]
+    return _susono_perm_mats_cache[key]
 
 
-class FujiMHC(nn.Module):
+class SusonoMHC(nn.Module):
     """MHC-Lite: Manifold-Constrained Hyper-Connections via permutation matrices.
 
     More memory and compute efficient than Sinkhorn-Knopp based mHC:
@@ -452,9 +452,9 @@ class FujiMHC(nn.Module):
         init_idx = layer_index % n
 
         # Normalise all streams concatenated: [B, S, n*D] → [B, S, n*D]
-        # FujiRMSNorm is defined later in this file but __init__ is called at
-        # instance-creation time, by which point FujiRMSNorm is already defined.
-        self.norm = FujiRMSNorm(hidden_size * n)
+        # SusonoRMSNorm is defined later in this file but __init__ is called at
+        # instance-creation time, by which point SusonoRMSNorm is already defined.
+        self.norm = SusonoRMSNorm(hidden_size * n)
 
         # ------------------------------------------------------------------
         # Width-connection parameters
@@ -525,7 +525,7 @@ class FujiMHC(nn.Module):
         res_coeff = torch.softmax(
             self.residual_scale * dynamic_res + self.static_alpha[n:], dim=-1
         )                                            # [B, S, n!]
-        perms = _get_fuji_perm_mats(n, X.device)    # [n!, n, n]
+        perms = _get_susono_perm_mats(n, X.device)    # [n!, n, n]
         H_res = torch.einsum('...r, rij -> ...ij', res_coeff, perms.to(res_coeff.dtype))    # [B, S, n, n]
 
         # Apply H_res: new_residuals[b,s,i,:] = Σ_j H_res[b,s,i,j] * X[b,s,j,:]
@@ -569,10 +569,10 @@ class FujiMHC(nn.Module):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Base transformer components (adapted from Qwen3-Next for FujiConfig)
+# Base transformer components (adapted from Qwen3-Next for SusonoConfig)
 # ──────────────────────────────────────────────────────────────────────────────
 
-class FujiRMSNormGated(nn.Module):
+class SusonoRMSNormGated(nn.Module):
     def __init__(self, hidden_size, eps=1e-6, **kwargs):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
@@ -588,7 +588,7 @@ class FujiRMSNormGated(nn.Module):
         return hidden_states.to(input_dtype)
 
 
-class FujiDynamicCache:
+class SusonoDynamicCache:
     """Dynamic cache for hybrid full-attention + linear attention (GatedDeltaNet) layers.
 
     Attention layers use key_cache / value_cache tensors [B, H, S, D].
@@ -597,7 +597,7 @@ class FujiDynamicCache:
 
     is_compileable = False
 
-    def __init__(self, config: FujiConfig):
+    def __init__(self, config: SusonoConfig):
         super().__init__()
         self.layer_types = config.layer_types
         self.transformer_layers = [
@@ -660,10 +660,10 @@ class FujiDynamicCache:
         return self.conv_states[self.last_linear_layer] is not None
 
 
-class FujiRotaryEmbedding(nn.Module):
+class SusonoRotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor
 
-    def __init__(self, config: FujiConfig, device=None):
+    def __init__(self, config: SusonoConfig, device=None):
         super().__init__()
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
@@ -678,7 +678,7 @@ class FujiRotaryEmbedding(nn.Module):
 
     @staticmethod
     def compute_default_rope_parameters(
-        config: FujiConfig | None = None,
+        config: SusonoConfig | None = None,
         device: Optional["torch.device"] = None,
         seq_len: int | None = None,
     ) -> tuple["torch.Tensor", float]:
@@ -706,7 +706,7 @@ class FujiRotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-class FujiRMSNorm(nn.Module):
+class SusonoRMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
@@ -774,10 +774,10 @@ def eager_attention_forward(
 
 
 @use_kernelized_func(apply_rotary_pos_emb)
-class FujiAttention(nn.Module):
+class SusonoAttention(nn.Module):
     """Multi-headed attention with gated query projection and QK-norm."""
 
-    def __init__(self, config: FujiConfig, layer_idx: int):
+    def __init__(self, config: SusonoConfig, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -799,8 +799,8 @@ class FujiAttention(nn.Module):
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
         if getattr(config, 'qk_layernorm', False):
-            self.q_norm = FujiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
-            self.k_norm = FujiRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.q_norm = SusonoRMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.k_norm = SusonoRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         else:
             self.q_norm = None
             self.k_norm = None
@@ -984,10 +984,10 @@ def torch_recurrent_gated_delta_rule(
     return core_attn_out, last_recurrent_state
 
 
-class FujiGatedDeltaNet(nn.Module):
+class SusonoGatedDeltaNet(nn.Module):
     """GatedDeltaNet linear attention layer."""
 
-    def __init__(self, config: FujiConfig, layer_idx: int):
+    def __init__(self, config: SusonoConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
@@ -1019,7 +1019,7 @@ class FujiGatedDeltaNet(nn.Module):
         A = torch.empty(self.num_v_heads).uniform_(0, 16)
         self.A_log = nn.Parameter(torch.log(A))
         self.norm = (
-            FujiRMSNormGated(self.head_v_dim, eps=self.layer_norm_epsilon)
+            SusonoRMSNormGated(self.head_v_dim, eps=self.layer_norm_epsilon)
             if FusedRMSNormGated is None
             else FusedRMSNormGated(
                 self.head_v_dim,
@@ -1067,7 +1067,7 @@ class FujiGatedDeltaNet(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cache_params: FujiDynamicCache | None = None,
+        cache_params: SusonoDynamicCache | None = None,
         cache_position: torch.LongTensor | None = None,
         attention_mask: torch.Tensor | None = None,
     ):
@@ -1143,7 +1143,7 @@ class FujiGatedDeltaNet(nn.Module):
         return self.out_proj(core_attn_out)
 
 
-class FujiGELUMLP(nn.Module):
+class SusonoGELUMLP(nn.Module):
     """Dense GELU MLP for full-attention layers. Matches Megatron swiglu=False (fc1/fc2)."""
 
     def __init__(self, config, intermediate_size=None):
@@ -1158,7 +1158,7 @@ class FujiGELUMLP(nn.Module):
         return self.fc2(self.act_fn(self.fc1(x)))
 
 
-class FujiMLP(nn.Module):
+class SusonoMLP(nn.Module):
     def __init__(self, config, intermediate_size=None):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -1173,7 +1173,7 @@ class FujiMLP(nn.Module):
 
 
 @use_experts_implementation
-class FujiExperts(nn.Module):
+class SusonoExperts(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.num_experts = config.num_experts
@@ -1203,7 +1203,7 @@ class FujiExperts(nn.Module):
         return final_hidden_states
 
 
-class FujiTopKRouter(nn.Module):
+class SusonoTopKRouter(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.top_k = config.num_experts_per_tok
@@ -1223,12 +1223,12 @@ class FujiTopKRouter(nn.Module):
         return router_logits, router_top_value, router_indices
 
 
-class FujiSparseMoeBlock(nn.Module):
+class SusonoSparseMoeBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.gate = FujiTopKRouter(config)
-        self.experts = FujiExperts(config)
-        self.shared_expert = FujiMLP(config, intermediate_size=config.shared_expert_intermediate_size)
+        self.gate = SusonoTopKRouter(config)
+        self.experts = SusonoExperts(config)
+        self.shared_expert = SusonoMLP(config, intermediate_size=config.shared_expert_intermediate_size)
         self.shared_expert_gate = torch.nn.Linear(config.hidden_size, 1, bias=False)
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1243,37 +1243,37 @@ class FujiSparseMoeBlock(nn.Module):
         return expert_output
 
 
-class FujiDecoderLayer(GradientCheckpointingLayer):
-    """Single Fuji transformer layer.
+class SusonoDecoderLayer(GradientCheckpointingLayer):
+    """Single Susono transformer layer.
 
     Supports both full (softmax) attention and linear (GatedDeltaNet) attention.
     MoE or dense MLP feed-forward blocks, controlled by config.
 
     Note: Engram memory and mHC multi-stream management are handled externally
-    by FujiModel.forward to keep this layer self-contained and composable.
+    by SusonoModel.forward to keep this layer self-contained and composable.
     """
 
-    def __init__(self, config: FujiConfig, layer_idx: int):
+    def __init__(self, config: SusonoConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.layer_type = config.layer_types[layer_idx]
 
         if self.layer_type == "linear_attention":
-            self.linear_attn = FujiGatedDeltaNet(config, layer_idx)
+            self.linear_attn = SusonoGatedDeltaNet(config, layer_idx)
         elif self.layer_type == "full_attention":
-            self.self_attn = FujiAttention(config, layer_idx)
+            self.self_attn = SusonoAttention(config, layer_idx)
 
         if self.layer_type == "full_attention":
-            self.mlp = FujiGELUMLP(config)
+            self.mlp = SusonoGELUMLP(config)
         elif (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
-            self.mlp = FujiSparseMoeBlock(config)
+            self.mlp = SusonoSparseMoeBlock(config)
         else:
-            self.mlp = FujiMLP(config, intermediate_size=config.intermediate_size)
+            self.mlp = SusonoMLP(config, intermediate_size=config.intermediate_size)
 
-        self.input_layernorm = FujiRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = FujiRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = SusonoRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = SusonoRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -1322,34 +1322,34 @@ class FujiDecoderLayer(GradientCheckpointingLayer):
 # Top-level model classes
 # ──────────────────────────────────────────────────────────────────────────────
 
-class FujiPreTrainedModel(PreTrainedModel):
-    config_class = FujiConfig
+class SusonoPreTrainedModel(PreTrainedModel):
+    config_class = SusonoConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["FujiDecoderLayer"]
+    _no_split_modules = ["SusonoDecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn = True
     _supports_sdpa = True
     _keys_to_ignore_on_load_unexpected = [r"^mtp.*"]
     _can_record_outputs = {
-        "router_logits": OutputRecorder(FujiTopKRouter, index=0),
-        "hidden_states": FujiDecoderLayer,
-        "attentions": FujiAttention,
+        "router_logits": OutputRecorder(SusonoTopKRouter, index=0),
+        "hidden_states": SusonoDecoderLayer,
+        "attentions": SusonoAttention,
     }
     _is_stateful = True
 
     @torch.no_grad()
     def _init_weights(self, module):
         super()._init_weights(module)
-        if isinstance(module, FujiGatedDeltaNet):
+        if isinstance(module, SusonoGatedDeltaNet):
             init.ones_(module.dt_bias)
             init.copy_(module.A_log, torch.empty_like(module.A_log).uniform_(0, 16).log_())
-        elif isinstance(module, FujiRMSNorm):
+        elif isinstance(module, SusonoRMSNorm):
             init.zeros_(module.weight)
-        elif isinstance(module, FujiExperts):
+        elif isinstance(module, SusonoExperts):
             init.normal_(module.gate_up_proj, mean=0.0, std=self.config.initializer_range)
             init.normal_(module.down_proj, mean=0.0, std=self.config.initializer_range)
-        elif isinstance(module, FujiSparseMoeBlock):
+        elif isinstance(module, SusonoSparseMoeBlock):
             init.normal_(module.gate.weight, mean=0.0, std=self.config.initializer_range)
 
 
@@ -1399,8 +1399,8 @@ def load_balancing_loss_func(
     return overall_loss * num_experts
 
 
-class FujiModel(FujiPreTrainedModel):
-    """Fuji transformer model with Engram memory and mHC multi-stream residuals.
+class SusonoModel(SusonoPreTrainedModel):
+    """Susono transformer model with Engram memory and mHC multi-stream residuals.
 
     mHC multi-stream flow (when use_mhc=True):
         X  [n, B, S, D]  — n parallel residual streams, all initialised from
@@ -1408,7 +1408,7 @@ class FujiModel(FujiPreTrainedModel):
         For each layer L:
             x_in = aggregate(X)           # [n,B,S,D] → [B,S,D]
             [Engram] x_in += engram(ids, x_in)  # if L in engram_layer_ids
-            x_out = FujiDecoderLayer(x_in)
+            x_out = SusonoDecoderLayer(x_in)
             X = distribute(X, x_out)      # update n streams
         hidden_states = final_aggregate(X)
 
@@ -1416,20 +1416,20 @@ class FujiModel(FujiPreTrainedModel):
     (with Engram optionally added to selected layers).
     """
 
-    def __init__(self, config: FujiConfig):
+    def __init__(self, config: SusonoConfig):
         super().__init__(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList(
-            [FujiDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [SusonoDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = FujiRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = FujiRotaryEmbedding(config=config)
+        self.norm = SusonoRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = SusonoRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
         # ── mHC: one connection module per layer ──────────────────────
         if config.use_mhc:
             self.mhc_modules = nn.ModuleList([
-                FujiMHC(
+                SusonoMHC(
                     hidden_size=config.hidden_size,
                     num_streams=config.mhc_num_streams,
                     layer_index=layer_idx,
@@ -1451,7 +1451,7 @@ class FujiModel(FujiPreTrainedModel):
         # ── Engram: one module per selected layer ─────────────────────
         if config.use_engram:
             self.engram_modules = nn.ModuleList([
-                FujiEngramModule(config, layer_id=layer_id)
+                SusonoEngramModule(config, layer_id=layer_id)
                 for layer_id in config.engram_layer_ids
             ])
             # Mapping: layer_idx → index in self.engram_modules
@@ -1485,7 +1485,7 @@ class FujiModel(FujiPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if use_cache and past_key_values is None:
-            past_key_values = FujiDynamicCache(config=self.config)
+            past_key_values = SusonoDynamicCache(config=self.config)
 
         if cache_position is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
@@ -1573,14 +1573,14 @@ class FujiModel(FujiPreTrainedModel):
 
 
 @auto_docstring
-class FujiForCausalLM(FujiPreTrainedModel, GenerationMixin):
+class SusonoForCausalLM(SusonoPreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_gather_output"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
-    def __init__(self, config: FujiConfig):
+    def __init__(self, config: SusonoConfig):
         super().__init__(config)
-        self.model = FujiModel(config)
+        self.model = SusonoModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.router_aux_loss_coef = config.router_aux_loss_coef
@@ -1595,7 +1595,7 @@ class FujiForCausalLM(FujiPreTrainedModel, GenerationMixin):
         input_ids: torch.LongTensor | None = None,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
-        past_key_values: FujiDynamicCache | None = None,
+        past_key_values: SusonoDynamicCache | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
         use_cache: bool | None = None,
@@ -1655,23 +1655,23 @@ class FujiForCausalLM(FujiPreTrainedModel, GenerationMixin):
         )
 
 
-class FujiForSequenceClassification(GenericForSequenceClassification, FujiPreTrainedModel):
+class SusonoForSequenceClassification(GenericForSequenceClassification, SusonoPreTrainedModel):
     pass
 
 
-class FujiForTokenClassification(GenericForTokenClassification, FujiPreTrainedModel):
+class SusonoForTokenClassification(GenericForTokenClassification, SusonoPreTrainedModel):
     pass
 
 
-class FujiForQuestionAnswering(GenericForQuestionAnswering, FujiPreTrainedModel):
+class SusonoForQuestionAnswering(GenericForQuestionAnswering, SusonoPreTrainedModel):
     base_model_prefix = "transformer"
 
 
 __all__ = [
-    "FujiForCausalLM",
-    "FujiForQuestionAnswering",
-    "FujiForSequenceClassification",
-    "FujiForTokenClassification",
-    "FujiModel",
-    "FujiPreTrainedModel",
+    "SusonoForCausalLM",
+    "SusonoForQuestionAnswering",
+    "SusonoForSequenceClassification",
+    "SusonoForTokenClassification",
+    "SusonoModel",
+    "SusonoPreTrainedModel",
 ]

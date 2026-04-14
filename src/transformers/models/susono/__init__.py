@@ -1,4 +1,4 @@
-# Copyright 2025 The Fuji Team. All rights reserved.
+# Copyright 2025 The Susono Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ from ...utils import OptionalDependencyNotAvailable, _LazyModule, is_torch_avail
 
 
 _import_structure = {
-    "configuration_fuji": ["FujiConfig"],
+    "configuration_susono": ["SusonoConfig"],
 }
 
 try:
@@ -26,18 +26,18 @@ try:
 except OptionalDependencyNotAvailable:
     pass
 else:
-    _import_structure["modeling_fuji"] = [
-        "FujiForCausalLM",
-        "FujiModel",
-        "FujiPreTrainedModel",
-        "FujiForSequenceClassification",
-        "FujiForTokenClassification",
-        "FujiForQuestionAnswering",
+    _import_structure["modeling_susono"] = [
+        "SusonoForCausalLM",
+        "SusonoModel",
+        "SusonoPreTrainedModel",
+        "SusonoForSequenceClassification",
+        "SusonoForTokenClassification",
+        "SusonoForQuestionAnswering",
     ]
 
 
 if TYPE_CHECKING:
-    from .configuration_fuji import FujiConfig
+    from .configuration_susono import SusonoConfig
 
     try:
         if not is_torch_available():
@@ -45,13 +45,13 @@ if TYPE_CHECKING:
     except OptionalDependencyNotAvailable:
         pass
     else:
-        from .modeling_fuji import (
-            FujiForCausalLM,
-            FujiModel,
-            FujiPreTrainedModel,
-            FujiForSequenceClassification,
-            FujiForTokenClassification,
-            FujiForQuestionAnswering,
+        from .modeling_susono import (
+            SusonoForCausalLM,
+            SusonoModel,
+            SusonoPreTrainedModel,
+            SusonoForSequenceClassification,
+            SusonoForTokenClassification,
+            SusonoForQuestionAnswering,
         )
 
 
