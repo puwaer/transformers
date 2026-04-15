@@ -1264,7 +1264,7 @@ class SusonoDecoderLayer(GradientCheckpointingLayer):
             self.self_attn = SusonoAttention(config, layer_idx)
 
         if self.layer_type == "full_attention":
-            self.mlp = SusonoGELUMLP(config)
+            self.mlp = SusonoMLP(config, intermediate_size=config.intermediate_size)
         elif (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
