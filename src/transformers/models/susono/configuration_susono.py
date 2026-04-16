@@ -110,6 +110,9 @@ class SusonoConfig(PreTrainedConfig):
             Coefficient for MoE load-balancing auxiliary loss.
         mlp_only_layers (`list[int]`, *optional*, defaults to `[]`):
             Layer indices that use dense MLP instead of MoE.
+        full_attention_interval (`int`, *optional*, defaults to 4):
+            When `layer_types` is `None`, insert a full-attention layer every
+            this many layers (i.e. at positions where `(i+1) % full_attention_interval == 0`).
         layer_types (`list[str]`, *optional*):
             Type of each layer: `"full_attention"` or `"linear_attention"`.
             If `None`, constructed using `full_attention_interval`.
@@ -210,6 +213,7 @@ class SusonoConfig(PreTrainedConfig):
         router_aux_loss_coef: Optional[float] = 0.001,
         mlp_only_layers: Optional[List[int]] = None,
         layer_types: Optional[List[str]] = None,
+        full_attention_interval: int = 4,
         # Special tokens 
         pad_token_id: Optional[int] = None,
         bos_token_id: Optional[int] = None,
@@ -256,11 +260,11 @@ class SusonoConfig(PreTrainedConfig):
         kwargs.setdefault("partial_rotary_factor", 0.25)
 
         # Layer types
+        self.full_attention_interval = full_attention_interval
         self.layer_types = layer_types
         if self.layer_types is None:
-            interval_pattern = kwargs.get("full_attention_interval", 4)
             self.layer_types = [
-                "linear_attention" if bool((i + 1) % interval_pattern) else "full_attention"
+                "linear_attention" if bool((i + 1) % full_attention_interval) else "full_attention"
                 for i in range(self.num_hidden_layers)
             ]
         layer_type_validation(self.layer_types, self.num_hidden_layers)
