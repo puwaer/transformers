@@ -108,6 +108,10 @@ class SusonoConfig(PreTrainedConfig):
             Whether to return router logits (needed for auxiliary loss).
         router_aux_loss_coef (`float`, *optional*, defaults to 0.001):
             Coefficient for MoE load-balancing auxiliary loss.
+        moe_shared_expert_gate_bias_init (`float`, *optional*, defaults to 0.0):
+            Initial value for the shared expert gate bias. Positive values (e.g., 2.0)
+            make the shared expert dominant at training start (sigmoid(2)≈0.88), helping
+            expert balance. Default 0.0 preserves legacy behavior (sigmoid(0)=0.5).
         mlp_only_layers (`list[int]`, *optional*, defaults to `[]`):
             Layer indices that use dense MLP instead of MoE.
         full_attention_interval (`int`, *optional*, defaults to 4):
@@ -211,6 +215,7 @@ class SusonoConfig(PreTrainedConfig):
         norm_topk_prob: Optional[bool] = True,
         output_router_logits: Optional[bool] = False,
         router_aux_loss_coef: Optional[float] = 0.001,
+        moe_shared_expert_gate_bias_init: Optional[float] = 0.0,
         mlp_only_layers: Optional[List[int]] = None,
         layer_types: Optional[List[str]] = None,
         full_attention_interval: int = 4,
@@ -285,6 +290,7 @@ class SusonoConfig(PreTrainedConfig):
         self.norm_topk_prob = norm_topk_prob
         self.output_router_logits = output_router_logits
         self.router_aux_loss_coef = router_aux_loss_coef
+        self.moe_shared_expert_gate_bias_init = moe_shared_expert_gate_bias_init
         self.mlp_only_layers = mlp_only_layers if mlp_only_layers is not None else []
 
         # Engram

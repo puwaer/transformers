@@ -1229,7 +1229,7 @@ class SusonoSparseMoeBlock(nn.Module):
         self.gate = SusonoTopKRouter(config)
         self.experts = SusonoExperts(config)
         self.shared_expert = SusonoMLP(config, intermediate_size=config.shared_expert_intermediate_size)
-        self.shared_expert_gate = torch.nn.Linear(config.hidden_size, 1, bias=False)
+        self.shared_expert_gate = torch.nn.Linear(config.hidden_size, 1, bias=True)
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -1351,6 +1351,9 @@ class SusonoPreTrainedModel(PreTrainedModel):
             init.normal_(module.down_proj, mean=0.0, std=self.config.initializer_range)
         elif isinstance(module, SusonoSparseMoeBlock):
             init.normal_(module.gate.weight, mean=0.0, std=self.config.initializer_range)
+            if module.shared_expert_gate.bias is not None:
+                bias_init = getattr(self.config, 'moe_shared_expert_gate_bias_init', 0.0)
+                init.constant_(module.shared_expert_gate.bias, bias_init)
 
 
 def load_balancing_loss_func(
