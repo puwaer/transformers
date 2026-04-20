@@ -237,7 +237,9 @@ class SusonoConfig(PreTrainedConfig):
         mhc_num_streams: int = 4,
         mhc_sinkhorn_iterations: int = 20,
         # Attention QK LayerNorm (Megatron qk_layernorm arg)
-        qk_layernorm: bool = False,
+        qk_layernorm: bool = True,
+        # Attention output gate (Qwen3-Next style: attn_out * sigmoid(gate))
+        attention_output_gate: bool = True,
         **kwargs,
     ):
         # Special tokens 
@@ -319,6 +321,8 @@ class SusonoConfig(PreTrainedConfig):
 
         # Attention QK LayerNorm
         self.qk_layernorm = qk_layernorm
+        # Attention output gate (Qwen3-Next)
+        self.attention_output_gate = attention_output_gate
 
         super().__init__(**kwargs)
 

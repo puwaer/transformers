@@ -786,8 +786,10 @@ class SusonoAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
+        self.use_output_gate = getattr(config, 'attention_output_gate', False)
+        q_out_dim = config.num_attention_heads * self.head_dim * (2 if self.use_output_gate else 1)
         self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+            config.hidden_size, q_out_dim, bias=config.attention_bias
         )
         self.k_proj = nn.Linear(
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
@@ -817,9 +819,16 @@ class SusonoAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
+        if self.use_output_gate:
+            query_states, gate = torch.chunk(
+                self.q_proj(hidden_states).view(*input_shape, -1, self.head_dim * 2), 2, dim=-1
+            )
+            gate = gate.reshape(*input_shape, -1)
+        else:
+            query_states = self.q_proj(hidden_states).view(hidden_shape)
+            gate = None
         if self.q_norm is not None:
-            query_states = self.q_norm(query_states)
+            query_states = self.q_norm(query_states.view(hidden_shape))
         query_states = query_states.transpose(1, 2)
 
         key_states = self.k_proj(hidden_states).view(hidden_shape)
@@ -851,6 +860,8 @@ class SusonoAttention(nn.Module):
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        if gate is not None:
+            attn_output = attn_output * torch.sigmoid(gate)
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
