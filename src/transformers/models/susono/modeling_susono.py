@@ -1274,9 +1274,10 @@ class SusonoDecoderLayer(GradientCheckpointingLayer):
         elif self.layer_type == "full_attention":
             self.self_attn = SusonoAttention(config, layer_idx)
 
-        if self.layer_type == "full_attention":
-            self.mlp = SusonoMLP(config, intermediate_size=config.intermediate_size)
-        elif (layer_idx not in config.mlp_only_layers) and (
+        # Qwen3-Next equivalent: MLP type decision is independent of attention type.
+        # All layers (both linear_attention and full_attention) use MoE when
+        # decoder_sparse_step criterion matches.
+        if (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
             self.mlp = SusonoSparseMoeBlock(config)
