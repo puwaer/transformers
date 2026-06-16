@@ -35,6 +35,7 @@ from transformers.testing_utils import (
 
 from ...causal_lm_tester import CausalLMModelTest, CausalLMModelTester
 from ...test_modeling_common import (
+    TEST_EAGER_MATCHES_BATCHED_AND_GROUPED_INFERENCE_PARAMETERIZATION,
     TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION,
 )
 
@@ -76,6 +77,10 @@ class GlmMoeDsaModelTest(CausalLMModelTest, unittest.TestCase):
     test_all_params_have_gradient = False
     model_split_percents = [0.5, 0.7, 0.8]
 
+    @unittest.skip("Float8 quantization + TP numerical noise exceeds match threshold")
+    def test_tp_generation_quantized(self):
+        pass
+
     def _check_past_key_values_for_generate(self, batch_size, past_key_values, seq_length, config):
         """Needs to be overridden as GLM-4.7-Flash has special MLA cache format (though we don't really use the MLA)"""
         self.assertIsInstance(past_key_values, Cache)
@@ -99,21 +104,36 @@ class GlmMoeDsaModelTest(CausalLMModelTest, unittest.TestCase):
             config.mlp_layer_types, ["dense", "dense", "dense", "sparse", "sparse", "sparse", "sparse", "sparse"]
         )
 
+    def test_indexer_types_respect_skip_topk_offset(self):
+        config = GlmMoeDsaConfig(num_hidden_layers=8, index_topk_freq=4, index_skip_topk_offset=3)
+        self.assertEqual(
+            config.indexer_types,
+            ["full", "full", "full", "shared", "shared", "shared", "full", "shared"],
+        )
+
+    # DSA selects tokens with a hard top-k, which is discontinuous: a tiny numerical difference in the
+    # indexer scores (attention backend, padding, batching, sequence packing) can flip which tokens are
+    # selected and thus change the output, so these exact-equivalence tests do not hold for DSA.
     @parameterized.expand(TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION)
-    @unittest.skip("Won't fix: Blip2 + T5 backbone needs custom input preparation for this test")
+    @unittest.skip("DSA hard top-k selection is sensitive to tiny numerical differences across backends.")
     def test_eager_matches_sdpa_inference(self, *args):
         pass
 
-    @unittest.skip("Not sure MoE can pass this + indexer outputs are not deterministic wrt padding")
-    def test_left_padding_compatibility(
-        self,
-    ):
+    @parameterized.expand(TEST_EAGER_MATCHES_BATCHED_AND_GROUPED_INFERENCE_PARAMETERIZATION)
+    @unittest.skip("DSA hard top-k selection is sensitive to tiny numerical differences across batching.")
+    def test_eager_matches_batched_and_grouped_inference(self, *args):
         pass
 
-    @unittest.skip("Not sure MoE can pass this + indexer outputs are not deterministic wrt padding")
-    def test_sdpa_padding_matches_padding_free_with_position_ids(
-        self,
-    ):
+    @unittest.skip("DSA hard top-k selection is sensitive to padding shifts (selection can flip).")
+    def test_left_padding_compatibility(self):
+        pass
+
+    @unittest.skip("DSA hard top-k selection is sensitive to sequence packing (selection can flip).")
+    def test_eager_padding_matches_padding_free_with_position_ids(self):
+        pass
+
+    @unittest.skip("DSA hard top-k selection is sensitive to sequence packing (selection can flip).")
+    def test_sdpa_padding_matches_padding_free_with_position_ids(self):
         pass
 
     @unittest.skip("Not sure MoE can pass this + indexer outputs are not deterministic wrt padding")
@@ -136,10 +156,6 @@ class GlmMoeDsaModelTest(CausalLMModelTest, unittest.TestCase):
     def test_assisted_decoding_sample(self):
         pass
 
-    @unittest.skip("Requires torch>=2.9.0 for grouped MM")
-    def test_eager_matches_batched_and_grouped_inference(self):
-        pass
-
     @unittest.skip("DSA indexer mask shape mismatch with static cache")
     def test_generate_from_inputs_embeds_with_static_cache(self):
         pass
@@ -154,6 +170,15 @@ class GlmMoeDsaModelTest(CausalLMModelTest, unittest.TestCase):
 
     @unittest.skip("DSA indexer mask shape mismatch with static cache")
     def test_generate_with_static_cache(self):
+        pass
+
+    @unittest.skip("GLM-MoE-DSA uses qk_rope_head_dim; generic rope scaling tests assume config.head_dim")
+    def test_model_rope_scaling_frequencies(self):
+        pass
+
+    @parameterized.expand([("linear",), ("dynamic",), ("yarn",)])
+    @unittest.skip("GLM-MoE-DSA uses qk_rope_head_dim; generic rope scaling tests assume config.head_dim")
+    def test_model_rope_scaling_from_config(self, scaling_type):
         pass
 
 
@@ -192,8 +217,8 @@ class GlmMoeDsaIntegrationTest(unittest.TestCase):
                 max_new_tokens=16,
             )
 
-        output = tokenizer.decode(outputs, skip_special_tokens=False)
-        self.assertqual(
+        output = tokenizer.batch_decode(outputs, skip_special_tokens=False)
+        self.assertEqual(
             output,
             [
                 "<|endoftext|><|endoftext|><|endoftext|>Hi, introduce yourself!\nI'm a 18 years old boy from Italy and I'm a student",

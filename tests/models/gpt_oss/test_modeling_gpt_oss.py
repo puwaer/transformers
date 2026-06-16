@@ -35,7 +35,6 @@ from transformers.testing_utils import (
     require_deterministic_for_xpu,
     require_kernels,
     require_torch,
-    require_torch_accelerator,
     require_torch_gpu,
     slow,
     torch_device,
@@ -69,6 +68,14 @@ class GptOssModelTest(CausalLMModelTest, unittest.TestCase):
     _is_stateful = True
     model_split_percents = [0.5, 0.6]
     model_tester_class = GptOssModelTester
+
+    @require_kernels
+    def test_kernelize_does_not_crash(self):
+        """Regression test #45799: `kernelize` should not crash with `use_kernelized_func` + `use_kernel_func_from_hub`."""
+        config, _ = self.model_tester.prepare_config_and_inputs_for_common()
+        model = GptOssModel(config).to(device=torch_device)
+        # This used to raise TypeError because apply_rotary_pos_emb was not wrapped as nn.Module
+        model.use_kernels = True
 
     @require_kernels
     @pytest.mark.flash_attn_test
@@ -135,7 +142,7 @@ class GptOssModelTest(CausalLMModelTest, unittest.TestCase):
         return super().test_generate_compile_model_forward_fullgraph()
 
     def test_reverse_loading_mapping(self, check_keys_were_modified=False):
-        super().test_reverse_loading_mapping(check_keys_were_modified)
+        super().test_reverse_loading_mapping(check_keys_were_modified=False)
 
 
 RESULTS_PATH = Path(__file__).parent.parent.parent / "fixtures/gpt_oss/integration_tests.json"
@@ -231,7 +238,6 @@ def distributed_worker(quantized, model_size, kernels, attn_impl, mode):
 
 
 @slow
-@require_torch_accelerator
 class GptOssIntegrationTest(unittest.TestCase):
     input_text = [
         "Roses are red, violets",
@@ -252,8 +258,13 @@ class GptOssIntegrationTest(unittest.TestCase):
     # ------------------------
     # Non-distributed inference
     # ------------------------
-    @staticmethod
-    def load_and_forward(model_id, attn_implementation, input_text, mode="eval", **pretrained_kwargs):
+    def load_and_forward(self, model_id, attn_implementation, input_text, mode="eval", **pretrained_kwargs):
+        if torch_device == "cpu":
+            if attn_implementation == "kernels-community/vllm-flash-attn3":
+                self.skipTest("vllm-flash-attn3 is not supported on CPU.")
+            if pretrained_kwargs.get("kernels", False) and mode == "train":
+                self.skipTest("CPU kernels only support inference.")
+
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             dtype=torch.bfloat16,
@@ -361,6 +372,12 @@ if __name__ == "__main__":
     @parameterized.expand(PARAMETERS)
     @require_deterministic_for_xpu
     def test_model_outputs(self, quantized, model, kernels, attn_impl, mode):
+        if torch_device == "cpu":
+            if attn_impl == "kernels-community/vllm-flash-attn3":
+                self.skipTest("vllm-flash-attn3 is not supported on CPU.")
+            if kernels and mode == "train":
+                self.skipTest("CPU kernels only support inference.")
+
         if torch_device == "xpu" and attn_impl == "kernels-community/vllm-flash-attn3":
             self.skipTest("flash attention 3 is not supported on XPU yet.")
 
@@ -426,6 +443,9 @@ if __name__ == "__main__":
     # ------------------------
     @parameterized.expand(PARAMETERS)
     def test_model_outputs_distributed(self, quantized, model, kernels, attn_impl, mode):
+        if torch_device == "cpu":
+            self.skipTest("Skip TP on CPU until verified.")
+
         if torch_device == "xpu" and attn_impl == "kernels-community/vllm-flash-attn3":
             self.skipTest("flash attention 3 is not supported on XPU yet.")
 
@@ -436,6 +456,12 @@ if __name__ == "__main__":
     # ------------------------
     @parameterized.expand(PARAMETERS)
     def test_training_step(self, quantized, model, kernels, attn_impl, mode):
+        if torch_device == "cpu":
+            if attn_impl == "kernels-community/vllm-flash-attn3":
+                self.skipTest("vllm-flash-attn3 is not supported on CPU.")
+            if kernels and mode == "train":
+                self.skipTest("CPU kernels only support inference.")
+
         if mode != "train":
             self.skipTest("This test is only for training mode.")
 

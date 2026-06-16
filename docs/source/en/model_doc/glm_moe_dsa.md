@@ -16,39 +16,62 @@ limitations under the License.
 ⚠️ Note that this file is in Markdown but contain specific syntax for our doc-builder (similar to MDX) that may not be rendered properly in your Markdown viewer.
 
 -->
-*This model was released on {release_date} and added to Hugging Face Transformers on 2026-02-08.*
+*This model was published in HF papers on 2026-02-17 and contributed to Hugging Face Transformers on 2026-02-09.*
 
+<div style="float: right;">
+    <div class="flex flex-wrap space-x-1">
+        <img alt="SDPA" src="https://img.shields.io/badge/SDPA-DE3412?style=flat&logo=pytorch&logoColor=white">
+        <img alt="Tensor parallelism" src="https://img.shields.io/badge/Tensor%20parallelism-06b6d4?style=flat&logoColor=white">
+    </div>
+</div>
 
 # GlmMoeDsa
 
-## Overview
+[GlmMoeDsa](https://huggingface.co/papers/2602.15763) (GLM-5) is a 744B-parameter mixture-of-experts model with 40B active parameters per token, using DeepSeek Sparse Attention (DSA) for efficient 200K-token context handling. It was trained entirely on Huawei Ascend chips and matches frontier-level performance on reasoning and long-context benchmarks.
 
-The GlmMoeDsa model was proposed in [<INSERT PAPER NAME HERE>](<INSERT PAPER LINK HERE>) by <INSERT AUTHORS HERE>.
-<INSERT SHORT SUMMARY HERE>
+The example below demonstrates how to generate text with [`Pipeline`] or the [`AutoModelForCausalLM`] class.
 
-The abstract from the paper is the following:
+<hfoptions id="usage">
+<hfoption id="Pipeline">
 
-<INSERT PAPER ABSTRACT HERE>
+```python
+from transformers import pipeline
 
-Tips:
 
-<INSERT TIPS ABOUT MODEL HERE>
+pipe = pipeline(
+    task="text-generation",
+    model="zai-org/GLM-5",
+)
+pipe("The theory of relativity states that")
+```
 
-This model was contributed by [INSERT YOUR HF USERNAME HERE](https://huggingface.co/<INSERT YOUR HF USERNAME HERE>).
-The original code can be found [here](<INSERT LINK TO GITHUB REPO HERE>).
+</hfoption>
+<hfoption id="AutoModelForCausalLM">
 
-## Usage examples
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-<INSERT SOME NICE EXAMPLES HERE>
+
+tokenizer = AutoTokenizer.from_pretrained("zai-org/GLM-5")
+model = AutoModelForCausalLM.from_pretrained(
+    "zai-org/GLM-5",
+    device_map="auto",
+)
+input_ids = tokenizer("The theory of relativity states that", return_tensors="pt").to(model.device)
+
+output = model.generate(**input_ids, max_new_tokens=50)
+print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+</hfoption>
+</hfoptions>
+
+> [!NOTE]
+> **The MLA query LoRA path (`q_lora_rank`) is required.** Like DeepSeek-V3.2, the DSA indexer scores queries from the low-rank query latent `q_a_layernorm(q_a_proj(x))` (its `wq_b` projection is sized by `q_lora_rank`), so the model always uses the LoRA query path and `q_lora_rank` must be set — the released checkpoint uses `2048`. The optional non-LoRA `q_proj` path that [DeepSeek-V3](./deepseek_v3) exposes for `q_lora_rank=None` is **not supported** here: without the query latent there is nothing for the indexer to consume.
 
 ## GlmMoeDsaConfig
 
 [[autodoc]] GlmMoeDsaConfig
-
-## GlmMoeDsaPreTrainedModel
-
-[[autodoc]] GlmMoeDsaPreTrainedModel
-    - forward
 
 ## GlmMoeDsaModel
 

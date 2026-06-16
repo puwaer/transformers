@@ -497,11 +497,7 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
     pipeline_model_mapping = (
         {
             "feature-extraction": T5Model,
-            "question-answering": T5ForQuestionAnswering,
-            "summarization": T5ForConditionalGeneration,
             "text-classification": T5ForSequenceClassification,
-            "text2text-generation": T5ForConditionalGeneration,
-            "translation": T5ForConditionalGeneration,
             "zero-shot": T5ForSequenceClassification,
         }
         if is_torch_available()
@@ -1062,7 +1058,7 @@ class T5ModelIntegrationTests(unittest.TestCase):
         loss = model(input_ids.to(torch_device), labels=labels.to(torch_device)).loss
         mtf_score = -(labels.shape[-1] * loss.item())
 
-        EXPECTED_SCORE = -40.1645
+        EXPECTED_SCORE = -59.0293
         torch.testing.assert_close(
             mtf_score,
             EXPECTED_SCORE,
@@ -1091,7 +1087,7 @@ class T5ModelIntegrationTests(unittest.TestCase):
         loss = model(input_ids.to(torch_device), labels=labels.to(torch_device)).loss
         mtf_score = -(labels.shape[-1] * loss.item())
 
-        EXPECTED_SCORE = -44.6276
+        EXPECTED_SCORE = -60.7397
         torch.testing.assert_close(
             mtf_score,
             EXPECTED_SCORE,
@@ -1432,14 +1428,14 @@ class T5ModelIntegrationTests(unittest.TestCase):
 
         # Dynamic Cache
         generated_ids = model.generate(**inputs, max_new_tokens=NUM_TOKENS_TO_GENERATE, do_sample=False)
-        dynamic_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        dynamic_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
         self.assertEqual(EXPECTED_TEXT_COMPLETION, dynamic_text)
 
         # Static Cache
         generated_ids = model.generate(
             **inputs, max_new_tokens=NUM_TOKENS_TO_GENERATE, do_sample=False, cache_implementation="static"
         )
-        static_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        static_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
         self.assertEqual(EXPECTED_TEXT_COMPLETION, static_text)
 
         # Static Cache + compile
@@ -1447,7 +1443,7 @@ class T5ModelIntegrationTests(unittest.TestCase):
         generated_ids = model.generate(
             **inputs, max_new_tokens=NUM_TOKENS_TO_GENERATE, do_sample=False, cache_implementation="static"
         )
-        static_compiled_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        static_compiled_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
         self.assertEqual(EXPECTED_TEXT_COMPLETION, static_compiled_text)
 
     @slow

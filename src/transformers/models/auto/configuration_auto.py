@@ -23,10 +23,10 @@ from typing import Any, TypeVar
 from ...configuration_utils import PreTrainedConfig
 from ...dynamic_module_utils import get_class_from_dynamic_module, resolve_trust_remote_code
 from ...utils import CONFIG_NAME, logging
+from .auto_mappings import CONFIG_MAPPING_NAMES, SPECIAL_MODEL_TYPE_TO_MODULE_NAME
 
 
 logger = logging.get_logger(__name__)
-
 
 _CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
 
@@ -1013,86 +1013,6 @@ MODEL_NAMES_MAPPING = OrderedDict[str, str](
 # `transfo-xl` (as in `CONFIG_MAPPING_NAMES`), we should use `transfo_xl`.
 DEPRECATED_MODELS = []
 
-SPECIAL_MODEL_TYPE_TO_MODULE_NAME = OrderedDict[str, str](
-    [
-        ("audioflamingo3_encoder", "audioflamingo3"),
-        ("openai-gpt", "openai"),
-        ("blip-2", "blip_2"),
-        ("data2vec-audio", "data2vec"),
-        ("data2vec-text", "data2vec"),
-        ("data2vec-vision", "data2vec"),
-        ("donut-swin", "donut"),
-        ("kosmos-2", "kosmos2"),
-        ("kosmos-2.5", "kosmos2_5"),
-        ("omdet-turbo", "omdet_turbo"),
-        ("maskformer-swin", "maskformer"),
-        ("xclip", "x_clip"),
-        ("clip_vision_model", "clip"),
-        ("qwen2_audio_encoder", "qwen2_audio"),
-        ("voxtral_encoder", "voxtral"),
-        ("voxtral_realtime_encoder", "voxtral_realtime"),
-        ("voxtral_realtime_text", "voxtral_realtime"),
-        ("clip_text_model", "clip"),
-        ("aria_text", "aria"),
-        ("gemma3_text", "gemma3"),
-        ("gemma3n_audio", "gemma3n"),
-        ("gemma3n_text", "gemma3n"),
-        ("gemma3n_vision", "gemma3n"),
-        ("glm4v_vision", "glm4v"),
-        ("glm4v_moe_vision", "glm4v_moe"),
-        ("glm4v_text", "glm4v"),
-        ("glm4v_moe_text", "glm4v_moe"),
-        ("glm_image_vision", "glm_image"),
-        ("glm_image_vqmodel", "glm_image"),
-        ("glm_image_text", "glm_image"),
-        ("glm_ocr_vision", "glm_ocr"),
-        ("glm_ocr_vqmodel", "glm_ocr"),
-        ("glm_ocr_text", "glm_ocr"),
-        ("glmasr_encoder", "glmasr"),
-        ("grounding-dino", "grounding_dino"),
-        ("moonshine_streaming_encoder", "moonshine_streaming"),
-        ("mm-grounding-dino", "mm_grounding_dino"),
-        ("idefics3_vision", "idefics3"),
-        ("mgp-str", "mgp_str"),
-        ("siglip_vision_model", "siglip"),
-        ("siglip2_vision_model", "siglip2"),
-        ("aimv2_vision_model", "aimv2"),
-        ("smolvlm_vision", "smolvlm"),
-        ("chinese_clip_vision_model", "chinese_clip"),
-        ("rt_detr_resnet", "rt_detr"),
-        ("granitevision", "llava_next"),
-        ("internvl_vision", "internvl"),
-        ("qwen2_5_vl_text", "qwen2_5_vl"),
-        ("qwen2_vl_text", "qwen2_vl"),
-        ("qwen3_vl_text", "qwen3_vl"),
-        ("qwen3_vl_moe_text", "qwen3_vl_moe"),
-        ("qwen3_5_text", "qwen3_5"),
-        ("qwen3_5_moe_text", "qwen3_5_moe"),
-        ("sam_vision_model", "sam"),
-        ("sam2_vision_model", "sam2"),
-        ("sam2_hiera_det_model", "sam2"),
-        ("sam3_vit_model", "sam3"),
-        ("sam3_vision_model", "sam3"),
-        ("edgetam_vision_model", "edgetam"),
-        ("sam_hq_vision_model", "sam_hq"),
-        ("t5gemma2_encoder", "t5gemma2"),
-        ("llama4_text", "llama4"),
-        ("blip_2_qformer", "blip_2"),
-        ("fastspeech2_conformer_with_hifigan", "fastspeech2_conformer"),
-        ("perception_encoder", "perception_lm"),
-        ("pe_audio_encoder", "pe_audio"),
-        ("pe_video_encoder", "pe_video"),
-        ("pe_audio_video_encoder", "pe_audio_video"),
-        ("video_llama_3_vision", "video_llama_3"),
-        ("parakeet_encoder", "parakeet"),
-        ("lw_detr_vit", "lw_detr"),
-        ("parakeet_ctc", "parakeet"),
-        ("lasr_encoder", "lasr"),
-        ("lasr_ctc", "lasr"),
-        ("wav2vec2-bert", "wav2vec2_bert"),
-    ]
-)
-
 
 def model_type_to_module_name(key) -> str:
     """Converts a config key to the corresponding module."""
@@ -1229,7 +1149,7 @@ class _LazyLoadAllMappings(OrderedDict[str, str]):
 
 
 def _get_class_name(model_class: str | list[str]):
-    if isinstance(model_class, (list, tuple)):
+    if isinstance(model_class, list | tuple):
         return " or ".join([f"[`{c}`]" for c in model_class if c is not None])
     return f"[`{model_class}`]"
 
@@ -1244,10 +1164,10 @@ def _list_model_options(indent, config_to_class=None, use_model_types=True):
             model_type_to_name = {
                 model_type: _get_class_name(model_class)
                 for model_type, model_class in config_to_class.items()
-                if model_type in MODEL_NAMES_MAPPING
+                if model_type in CONFIG_MAPPING_NAMES
             }
         lines = [
-            f"{indent}- **{model_type}** -- {model_type_to_name[model_type]} ({MODEL_NAMES_MAPPING[model_type]} model)"
+            f"{indent}- **{model_type}** -- {model_type_to_name[model_type]} ({CONFIG_MAPPING_NAMES[model_type]} model)"
             for model_type in sorted(model_type_to_name.keys())
         ]
     else:
@@ -1257,7 +1177,7 @@ def _list_model_options(indent, config_to_class=None, use_model_types=True):
             if config in CONFIG_MAPPING_NAMES
         }
         config_to_model_name = {
-            config: MODEL_NAMES_MAPPING[model_type] for model_type, config in CONFIG_MAPPING_NAMES.items()
+            config: CONFIG_MAPPING_NAMES[model_type] for model_type, config in CONFIG_MAPPING_NAMES.items()
         }
         lines = [
             f"{indent}- [`{config_name}`] configuration class:"
@@ -1339,7 +1259,7 @@ class AutoConfig:
                     - A path to a *directory* containing a configuration file saved using the
                       [`~PreTrainedConfig.save_pretrained`] method, or the [`~PreTrainedModel.save_pretrained`] method,
                       e.g., `./my_model_directory/`.
-                    - A path or url to a saved configuration JSON *file*, e.g.,
+                    - a path to a saved configuration JSON *file*, e.g.,
                       `./my_model_directory/configuration.json`.
             cache_dir (`str` or `os.PathLike`, *optional*):
                 Path to a directory in which a downloaded pretrained model configuration should be cached if the
@@ -1409,6 +1329,9 @@ class AutoConfig:
         config_dict, unused_kwargs = PreTrainedConfig.get_config_dict(pretrained_model_name_or_path, **kwargs)
         has_remote_code = "auto_map" in config_dict and "AutoConfig" in config_dict["auto_map"]
         has_local_code = "model_type" in config_dict and config_dict["model_type"] in CONFIG_MAPPING
+        explicit_local_code = has_local_code and not CONFIG_MAPPING[config_dict["model_type"]].__module__.startswith(
+            "transformers."
+        )
         if has_remote_code:
             class_ref = config_dict["auto_map"]["AutoConfig"]
             if "--" in class_ref:
@@ -1419,7 +1342,7 @@ class AutoConfig:
                 trust_remote_code, pretrained_model_name_or_path, has_local_code, has_remote_code, upstream_repo
             )
 
-        if has_remote_code and trust_remote_code:
+        if has_remote_code and trust_remote_code and not explicit_local_code:
             config_class = get_class_from_dynamic_module(
                 class_ref, pretrained_model_name_or_path, code_revision=code_revision, **kwargs
             )
@@ -1471,4 +1394,4 @@ class AutoConfig:
         CONFIG_MAPPING.register(model_type, config, exist_ok=exist_ok)
 
 
-__all__ = ["CONFIG_MAPPING", "MODEL_NAMES_MAPPING", "AutoConfig"]
+__all__ = ["CONFIG_MAPPING", "AutoConfig"]
